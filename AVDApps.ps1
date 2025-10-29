@@ -5,12 +5,8 @@
 $ErrorActionPreference = 'Stop'
 $LogPath = 'C:\AVD-Provision\WingetInstall.log'
 $Apps = @(
-    'Microsoft.Teams',
     'Google.Chrome',
-    'Mozilla.Firefox',
-    '7zip.7zip',
     'Notepad++.Notepad++',
-    'Microsoft.PowerToys',
     'Microsoft.VisualStudioCode'
 )
 
@@ -104,3 +100,4 @@ try {
 catch { Write-Log "Intune sync failed: $($_.Exception.Message)" }
 
 Write-Log "=== AVD Winget Provisioning Complete ==="
+
