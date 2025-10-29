@@ -1,5 +1,5 @@
 # ==============================================================
-# AVD Winget Installer – BULLETPROOF v2
+# AVD Winget Installer – BULLETPROOF v3 (FIXED SCOPE)
 # ==============================================================
 
 $ErrorActionPreference = 'Stop'
@@ -17,25 +17,43 @@ function Write-Log {
 }
 
 function Invoke-RobustDownload {
-    param([string]$Url, [string]$OutputPath, [int]$Retries = 5)
+    param(
+        [string]$Url,
+        [string]$OutputPath,
+        [int]$Retries = 5
+    )
+
     $attempt = 0
     do {
         $attempt++
         Write-Log "Download attempt $attempt/$Retries: $Url"
+
         try {
             $ProgressPreference = 'SilentlyContinue'
             $webClient = New-Object System.Net.WebClient
             $webClient.Headers.Add("User-Agent", "AVD-Provisioner/1.0")
             $webClient.DownloadFile($Url, $OutputPath)
-            if ((Get-Item $OutputPath).Length -gt 1000000) {
-                Write-Log "Download SUCCESS"
+
+            $fileSize = (Get-Item $OutputPath -ErrorAction Stop).Length
+            if ($fileSize -gt 1000000) {
+                Write-Log "Download SUCCESS: $fileSize bytes"
                 return $true
             }
+            throw "File too small or corrupt"
         }
-        catch { Write-Log "Failed: $($_.Exception.Message)" }
-        if (Test-Path $OutputPath) { Remove-Item $OutputPath -Force }
-        if ($attempt -lt $Retries) { Start-Sleep -Seconds ([Math]::Pow(2, $attempt) * 10) }
+        catch {
+            Write-Log "Download failed: $($_.Exception.Message)"
+            if (Test-Path $OutputPath) { Remove-Item $OutputPath -Force -ErrorAction SilentlyContinue }
+        }
+
+        if ($attempt -lt $Retries) {
+            $backoff = [Math]::Pow(2, $attempt) * 10
+            Write-Log "Retrying in $backoff seconds..."
+            Start-Sleep -Seconds $backoff
+        }
     } while ($attempt -lt $Retries)
+
+    Write-Log "All download attempts failed."
     return $false
 }
 
@@ -49,8 +67,11 @@ $timer = [Diagnostics.Stopwatch]::StartNew()
 $internetReady = $false
 while (-not $internetReady -and $timer.Elapsed.TotalSeconds -lt $timeout) {
     try {
-        $test = Invoke-WebRequest -Uri "https://github.com" -UseBasicParsing -Method Head -TimeoutSec 10
-        if ($test.StatusCode -eq 200) { $internetReady = $true; Write-Log "Internet ready" }
+        $test = Invoke-WebRequest -Uri "https://github.com" -UseBasicParsing -Method Head -TimeoutSec 10 -ErrorAction Stop
+        if ($test.StatusCode -eq 200) {
+            $internetReady = $true
+            Write-Log "Internet confirmed via HTTP"
+        }
     }
     catch { }
     if (-not $internetReady) {
@@ -66,21 +87,26 @@ $wingetUrl = "https://github.com/microsoft/winget-cli/releases/download/v1.9.256
 $installerPath = "$env:TEMP\winget.exe"
 
 if (-not (Test-Path $wingetExe)) {
+    Write-Log "Downloading Winget..."
     if (-not (Invoke-RobustDownload -Url $wingetUrl -OutputPath $installerPath)) {
         Write-Log "CRITICAL: Winget download failed"; exit 1
     }
+
     $installDir = Split-Path $wingetExe -Parent
     if (-not (Test-Path $installDir)) { New-Item -ItemType Directory -Path $installDir -Force | Out-Null }
     Move-Item -Path $installerPath -Destination $wingetExe -Force
-    Write-Log "Winget installed"
+    Write-Log "Winget installed to: $wingetExe"
 
     $machinePath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
     if ($machinePath -notlike "*$installDir*") {
         [Environment]::SetEnvironmentVariable("PATH", "$machinePath;$installDir", "Machine")
         $env:PATH += ";$installDir"
+        Write-Log "Added to machine PATH"
     }
 }
-else { Write-Log "Winget already installed" }
+else {
+    Write-Log "Winget already installed"
+}
 
 # === Install Apps ===
 foreach ($appId in $Apps) {
@@ -89,8 +115,13 @@ foreach ($appId in $Apps) {
         $attempt++
         Write-Log "[$attempt/3] Installing $appId ..."
         $output = & $wingetExe install --id $appId --silent --accept-package-agreements --accept-source-agreements --force --scope machine 2>&1
-        if ($LASTEXITCODE -eq 0) { Write-Log "SUCCESS: $appId"; break }
-        else { Write-Log "Failed: $output"; if ($attempt -lt 3) { Start-Sleep -Seconds 30 } }
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log "SUCCESS: $appId"
+            break
+        } else {
+            Write-Log "Failed: $output"
+            if ($attempt -lt 3) { Start-Sleep -Seconds 30 }
+        }
     } while ($attempt -lt 3)
 }
 
