@@ -1,5 +1,5 @@
 # ==============================================================
-# AVD Winget Installer – BULLETPROOF v4 (SCOPE FIXED)
+# AVD Winget Installer – BULLETPROOF v5 (NO VARIABLE SCOPE ISSUES)
 # ==============================================================
 
 $ErrorActionPreference = 'Stop'
@@ -12,8 +12,9 @@ $Apps = @(
 function Write-Log {
     param([string]$Message)
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    "$ts - $Message" | Out-File -FilePath $LogPath -Append -Encoding UTF8
-    Write-Host $Message
+    $logMessage = "$ts - $Message"
+    $logMessage | Out-File -FilePath $LogPath -Append -Encoding UTF8
+    Write-Host $logMessage
 }
 
 function Invoke-RobustDownload {
@@ -23,13 +24,12 @@ function Invoke-RobustDownload {
         [int]$MaxRetries = 5
     )
 
-    # === ALL VARIABLES LOCAL TO FUNCTION ===
+    Write-Log "Entering Invoke-RobustDownload with URL: $Url, Output: $OutputPath, Retries: $MaxRetries"
     $attempt = 0
-    $retryDelay = 10
 
     while ($attempt -lt $MaxRetries) {
         $attempt++
-        Write-Log "Download attempt $attempt of $MaxRetries: $Url"
+        Write-Log ("Download attempt {0} of {1}: {2}" -f $attempt, $MaxRetries, $Url)
 
         try {
             $ProgressPreference = 'SilentlyContinue'
@@ -37,12 +37,12 @@ function Invoke-RobustDownload {
             $webClient.Headers.Add("User-Agent", "AVD-Provisioner/1.0")
             $webClient.DownloadFile($Url, $OutputPath)
 
-            # Verify file
-            if ((Get-Item $OutputPath -ErrorAction Stop).Length -gt 1MB) {
-                Write-Log "Download SUCCESS"
+            $fileSize = (Get-Item $OutputPath -ErrorAction Stop).Length
+            if ($fileSize -gt 1MB) {
+                Write-Log "Download SUCCESS: $fileSize bytes"
                 return $true
             }
-            throw "File too small"
+            throw "Downloaded file is too small or corrupt"
         }
         catch {
             Write-Log "Download failed: $($_.Exception.Message)"
@@ -50,13 +50,13 @@ function Invoke-RobustDownload {
         }
 
         if ($attempt -lt $MaxRetries) {
-            $retryDelay = [Math]::Min($retryDelay * 2, 120)  # Exponential backoff, max 2 min
+            $retryDelay = [Math]::Min([Math]::Pow(2, $attempt) * 10, 120)
             Write-Log "Retrying in $retryDelay seconds..."
             Start-Sleep -Seconds $retryDelay
         }
     }
 
-    Write-Log "All $MaxRetries download attempts failed."
+    Write-Log "All $MaxRetries download attempts failed"
     return $false
 }
 
@@ -64,9 +64,9 @@ function Invoke-RobustDownload {
 if (-not (Test-Path 'C:\AVD-Provision')) {
     New-Item -ItemType Directory -Path 'C:\AVD-Provision' -Force | Out-Null
 }
-Write-Log "=== AVD Winget Installer Started ==="
+Write-Log "=== AVD Winget Installer v5 Started ==="
 
-# === Wait for internet (HTTP HEAD) ===
+# === Wait for internet ===
 $timeout = 300
 $timer = [Diagnostics.Stopwatch]::StartNew()
 $internetReady = $false
@@ -85,19 +85,19 @@ while (-not $internetReady -and $timer.Elapsed.TotalSeconds -lt $timeout) {
     }
 }
 if (-not $internetReady) {
-    Write-Log "ERROR: No internet after $timeout seconds"
+    Write-Log "ERROR: No internet connectivity after $timeout seconds"
     exit 1
 }
 
-# === Install Winget (standalone .exe) ===
+# === Install Winget ===
 $wingetExe = "$env:ProgramFiles\Winget\winget.exe"
 $wingetUrl = "https://github.com/microsoft/winget-cli/releases/download/v1.9.2561-preview/winget-1.9.2561-preview-x64.exe"
 $installerPath = "$env:TEMP\winget.exe"
 
 if (-not (Test-Path $wingetExe)) {
-    Write-Log "Downloading Winget CLI..."
+    Write-Log "Starting Winget download..."
     if (-not (Invoke-RobustDownload -Url $wingetUrl -OutputPath $installerPath -MaxRetries 5)) {
-        Write-Log "FATAL: Could not download Winget"
+        Write-Log "FATAL: Failed to download Winget after retries"
         exit 1
     }
 
@@ -108,7 +108,7 @@ if (-not (Test-Path $wingetExe)) {
     Move-Item -Path $installerPath -Destination $wingetExe -Force
     Write-Log "Winget installed to: $wingetExe"
 
-    # Add to machine PATH
+    # Add to system PATH
     $machinePath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
     if ($machinePath -notlike "*$installDir*") {
         [Environment]::SetEnvironmentVariable("PATH", "$machinePath;$installDir", "Machine")
@@ -120,21 +120,23 @@ else {
     Write-Log "Winget already installed at: $wingetExe"
 }
 
-# === Install Apps via Winget ===
+# === Install Apps ===
 foreach ($appId in $Apps) {
     $attempt = 0
+    $maxAttempts = 3
     do {
         $attempt++
-        Write-Log "[$attempt/3] Installing $appId ..."
+        Write-Log ("[{0}/{1}] Installing {2} ..." -f $attempt, $maxAttempts, $appId)
         $output = & $wingetExe install --id $appId --silent --accept-package-agreements --accept-source-agreements --force --scope machine 2>&1
         if ($LASTEXITCODE -eq 0) {
             Write-Log "SUCCESS: $appId installed"
             break
-        } else {
-            Write-Log "Failed (attempt $attempt): $output"
-            if ($attempt -lt 3) { Start-Sleep -Seconds 30 }
         }
-    } while ($attempt -lt 3)
+        else {
+            Write-Log "Failed (attempt $attempt): $output"
+            if ($attempt -lt $maxAttempts) { Start-Sleep -Seconds 30 }
+        }
+    } while ($attempt -lt $maxAttempts)
 }
 
 # === Trigger Intune Sync ===
@@ -148,4 +150,4 @@ catch {
     Write-Log "Intune sync failed: $($_.Exception.Message)"
 }
 
-Write-Log "=== AVD WINGET INSTALLER COMPLETE ==="
+Write-Log "=== AVD WINGET INSTALLER v5 COMPLETE ==="
