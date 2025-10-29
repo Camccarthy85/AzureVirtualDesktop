@@ -1,153 +1,165 @@
 # ==============================================================
-# AVD Winget Installer – BULLETPROOF v5 (NO VARIABLE SCOPE ISSUES)
+# AVD Intune Enrollment & Sync – BULLETPROOF
 # ==============================================================
 
 $ErrorActionPreference = 'Stop'
-$LogPath = 'C:\AVD-Provision\WingetInstall.log'
-$Apps = @(
-    'Microsoft.Teams', 'Google.Chrome', 'Mozilla.Firefox',
-    '7zip.7zip', 'Notepad++.Notepad++', 'Microsoft.PowerToys', 'Microsoft.VisualStudioCode'
-)
+$LogPath = 'C:\AVD-Provision\IntuneSync.log'
 
 function Write-Log {
     param([string]$Message)
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $logMessage = "$ts - $Message"
-    $logMessage | Out-File -FilePath $LogPath -Append -Encoding UTF8
+    $logMessage | Out-File -FilePath $LogPath -Append -Encoding UTF8 -Force
     Write-Host $logMessage
-}
-
-function Invoke-RobustDownload {
-    param(
-        [string]$Url,
-        [string]$OutputPath,
-        [int]$MaxRetries = 5
-    )
-
-    Write-Log "Entering Invoke-RobustDownload with URL: $Url, Output: $OutputPath, Retries: $MaxRetries"
-    $attempt = 0
-
-    while ($attempt -lt $MaxRetries) {
-        $attempt++
-        Write-Log ("Download attempt {0} of {1}: {2}" -f $attempt, $MaxRetries, $Url)
-
-        try {
-            $ProgressPreference = 'SilentlyContinue'
-            $webClient = New-Object System.Net.WebClient
-            $webClient.Headers.Add("User-Agent", "AVD-Provisioner/1.0")
-            $webClient.DownloadFile($Url, $OutputPath)
-
-            $fileSize = (Get-Item $OutputPath -ErrorAction Stop).Length
-            if ($fileSize -gt 1MB) {
-                Write-Log "Download SUCCESS: $fileSize bytes"
-                return $true
-            }
-            throw "Downloaded file is too small or corrupt"
-        }
-        catch {
-            Write-Log "Download failed: $($_.Exception.Message)"
-            if (Test-Path $OutputPath) { Remove-Item $OutputPath -Force -ErrorAction SilentlyContinue }
-        }
-
-        if ($attempt -lt $MaxRetries) {
-            $retryDelay = [Math]::Min([Math]::Pow(2, $attempt) * 10, 120)
-            Write-Log "Retrying in $retryDelay seconds..."
-            Start-Sleep -Seconds $retryDelay
-        }
-    }
-
-    Write-Log "All $MaxRetries download attempts failed"
-    return $false
 }
 
 # === Create log directory ===
 if (-not (Test-Path 'C:\AVD-Provision')) {
     New-Item -ItemType Directory -Path 'C:\AVD-Provision' -Force | Out-Null
 }
-Write-Log "=== AVD Winget Installer v5 Started ==="
+Write-Log "=== AVD Intune Enrollment & Sync Started ==="
 
-# === Wait for internet ===
+# === Wait for internet (robust check) ===
 $timeout = 300
 $timer = [Diagnostics.Stopwatch]::StartNew()
 $internetReady = $false
+$testUrls = @("https://graph.microsoft.com", "https://login.microsoftonline.com")
 
 while (-not $internetReady -and $timer.Elapsed.TotalSeconds -lt $timeout) {
-    try {
-        $response = Invoke-WebRequest -Uri "https://github.com" -Method Head -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
-        if ($response.StatusCode -eq 200) {
-            $internetReady = $true
-            Write-Log "Internet connectivity confirmed"
+    foreach ($url in $testUrls) {
+        try {
+            $response = Invoke-WebRequest -Uri $url -Method Head -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+            if ($response.StatusCode -eq 200) {
+                $internetReady = $true
+                Write-Log "Internet confirmed via $url"
+                break
+            }
+        }
+        catch {
+            Write-Log "Internet check failed for $url : $($_.Exception.Message)"
         }
     }
-    catch {
+    if (-not $internetReady) {
         Write-Log "Waiting for internet... ($([int]$timer.Elapsed.TotalSeconds)s)"
         Start-Sleep -Seconds 10
     }
 }
 if (-not $internetReady) {
-    Write-Log "ERROR: No internet connectivity after $timeout seconds"
+    Write-Log "FATAL: No internet after $timeout seconds"
     exit 1
 }
 
-# === Install Winget ===
-$wingetExe = "$env:ProgramFiles\Winget\winget.exe"
-$wingetUrl = "https://github.com/microsoft/winget-cli/releases/download/v1.9.2561-preview/winget-1.9.2561-preview-x64.exe"
-$installerPath = "$env:TEMP\winget.exe"
+# === Check & Force Entra ID Join ===
+Write-Log "Checking Entra ID join status..."
+$dsreg = dsregcmd /status
+$joinStatus = ($dsreg | Select-String "AzureAdJoined : YES").Count -gt 0
 
-if (-not (Test-Path $wingetExe)) {
-    Write-Log "Starting Winget download..."
-    if (-not (Invoke-RobustDownload -Url $wingetUrl -OutputPath $installerPath -MaxRetries 5)) {
-        Write-Log "FATAL: Failed to download Winget after retries"
+if (-not $joinStatus) {
+    Write-Log "Not Entra ID joined. Attempting to join..."
+    try {
+        # Force Entra ID join
+        $result = dsregcmd /join /debug
+        Write-Log "Entra ID join result: $result"
+        
+        # Wait up to 2 min for join to complete
+        $joinTimer = [Diagnostics.Stopwatch]::StartNew()
+        while (($joinTimer.Elapsed.TotalSeconds -lt 120) -and (-not ($dsregcmd /status | Select-String "AzureAdJoined : YES"))) {
+            Write-Log "Waiting for Entra ID join..."
+            Start-Sleep -Seconds 10
+        }
+        $joinStatus = ($dsregcmd /status | Select-String "AzureAdJoined : YES").Count -gt 0
+        if (-not $joinStatus) {
+            Write-Log "FATAL: Entra ID join failed after 120 seconds"
+            exit 1
+        }
+        Write-Log "Entra ID joined successfully"
+    }
+    catch {
+        Write-Log "FATAL: Entra ID join failed: $($_.Exception.Message)"
         exit 1
-    }
-
-    $installDir = Split-Path $wingetExe -Parent
-    if (-not (Test-Path $installDir)) {
-        New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-    }
-    Move-Item -Path $installerPath -Destination $wingetExe -Force
-    Write-Log "Winget installed to: $wingetExe"
-
-    # Add to system PATH
-    $machinePath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
-    if ($machinePath -notlike "*$installDir*") {
-        [Environment]::SetEnvironmentVariable("PATH", "$machinePath;$installDir", "Machine")
-        $env:PATH += ";$installDir"
-        Write-Log "Added Winget to system PATH"
     }
 }
 else {
-    Write-Log "Winget already installed at: $wingetExe"
+    Write-Log "Already Entra ID joined"
 }
 
-# === Install Apps ===
-foreach ($appId in $Apps) {
-    $attempt = 0
-    $maxAttempts = 3
-    do {
-        $attempt++
-        Write-Log ("[{0}/{1}] Installing {2} ..." -f $attempt, $maxAttempts, $appId)
-        $output = & $wingetExe install --id $appId --silent --accept-package-agreements --accept-source-agreements --force --scope machine 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Log "SUCCESS: $appId installed"
-            break
+# === Force Intune MDM Enrollment ===
+Write-Log "Checking Intune MDM enrollment..."
+$mdmStatus = (Get-CimInstance -Namespace "root\cimv2\mdm\dmmap" -ClassName "MDM_DevDetail_Ext01" -ErrorAction SilentlyContinue).DeviceName
+
+if (-not $mdmStatus) {
+    Write-Log "Not enrolled in Intune. Forcing enrollment..."
+    try {
+        # Trigger MDM enrollment
+        $namespace = "root\cimv2\mdm\dmmap"
+        $class = "MDM_Scope01"
+        $obj = Get-CimInstance -Namespace $namespace -ClassName $class -ErrorAction Stop
+        if ($obj) {
+            Invoke-CimMethod -Namespace $namespace -ClassName $class -MethodName Enroll -Arguments @{FriendlyName=$obj.FriendlyName; SessionId=(New-Guid).Guid} | Out-Null
+            Write-Log "MDM enrollment triggered"
+            
+            # Wait up to 2 min for enrollment
+            $enrollTimer = [Diagnostics.Stopwatch]::StartNew()
+            while (($enrollTimer.Elapsed.TotalSeconds -lt 120) -and (-not (Get-CimInstance -Namespace $namespace -ClassName "MDM_DevDetail_Ext01" -ErrorAction SilentlyContinue))) {
+                Write-Log "Waiting for MDM enrollment..."
+                Start-Sleep -Seconds 10
+            }
+            $mdmStatus = (Get-CimInstance -Namespace $namespace -ClassName "MDM_DevDetail_Ext01" -ErrorAction SilentlyContinue).DeviceName
+            if (-not $mdmStatus) {
+                Write-Log "FATAL: MDM enrollment failed after 120 seconds"
+                exit 1
+            }
+            Write-Log "Intune MDM enrolled successfully"
         }
         else {
-            Write-Log "Failed (attempt $attempt): $output"
-            if ($attempt -lt $maxAttempts) { Start-Sleep -Seconds 30 }
+            Write-Log "FATAL: MDM_Scope01 not found"
+            exit 1
         }
-    } while ($attempt -lt $maxAttempts)
+    }
+    catch {
+        Write-Log "FATAL: MDM enrollment failed: $($_.Exception.Message)"
+        exit 1
+    }
+}
+else {
+    Write-Log "Already enrolled in Intune: $mdmStatus"
 }
 
-# === Trigger Intune Sync ===
-Write-Log "Triggering Intune check-in..."
+# === Force Intune Policy/App Sync ===
+Write-Log "Triggering Intune policy and app sync..."
 try {
-    Get-CimInstance -Namespace "root\cimv2\mdm\dmmap" -ClassName "MDM_EnterpriseModernAppManagement_AppManagement01" -ErrorAction SilentlyContinue |
-        Invoke-CimMethod -MethodName UpdateScanMethod | Out-Null
-    Write-Log "Intune sync triggered"
+    $namespace = "root\cimv2\mdm\dmmap"
+    $class = "MDM_EnterpriseModernAppManagement_AppManagement01"
+    $syncObj = Get-CimInstance -Namespace $namespace -ClassName $class -ErrorAction SilentlyContinue
+    if ($syncObj) {
+        Invoke-CimMethod -Namespace $namespace -ClassName $class -MethodName UpdateScanMethod | Out-Null
+        Write-Log "Intune policy/app sync triggered"
+
+        # Wait up to 5 min for sync to complete
+        $syncTimer = [Diagnostics.Stopwatch]::StartNew()
+        while ($syncTimer.Elapsed.TotalSeconds -lt 300) {
+            $syncStatus = Get-CimInstance -Namespace $namespace -ClassName $class -ErrorAction SilentlyContinue
+            if ($syncStatus.LastSyncStatus -eq 0) {
+                Write-Log "Intune sync completed successfully"
+                break
+            }
+            Write-Log "Waiting for Intune sync... ($([int]$syncTimer.Elapsed.TotalSeconds)s)"
+            Start-Sleep -Seconds 15
+        }
+        if ($syncStatus.LastSyncStatus -ne 0) {
+            Write-Log "WARNING: Intune sync did not complete successfully"
+        }
+    }
+    else {
+        Write-Log "WARNING: Could not find MDM_EnterpriseModernAppManagement_AppManagement01"
+    }
+
+    # Restart Intune Management Extension for immediate processing
+    Write-Log "Restarting Intune Management Extension..."
+    Restart-Service -Name "IntuneManagementExtension" -Force -ErrorAction SilentlyContinue
 }
 catch {
-    Write-Log "Intune sync failed: $($_.Exception.Message)"
+    Write-Log "WARNING: Intune sync failed: $($_.Exception.Message)"
 }
 
-Write-Log "=== AVD WINGET INSTALLER v5 COMPLETE ==="
+Write-Log "=== AVD Intune Enrollment & Sync COMPLETE ==="
