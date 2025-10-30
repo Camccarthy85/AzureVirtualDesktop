@@ -52,7 +52,7 @@ function Download ($Url, $Dest) {
     try {
         Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -ErrorAction Stop
     } catch {
-        throw "Download failed: $Url — $($_.Exception.Message)"
+        throw ("Download failed: " + $Url + " - " + $_.Exception.Message)
     }
 }
 
@@ -131,3 +131,4 @@ foreach ($app in $AppsToInstall) {
 Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
 Write-Host "=== INSTALLATION COMPLETE ==="
 exit 0
+
