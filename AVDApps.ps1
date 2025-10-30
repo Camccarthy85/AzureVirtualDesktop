@@ -1,24 +1,20 @@
 #Requires -RunAsAdministrator
 #Requires -Version 5.1
-
 <#
 .SYNOPSIS
-    Installs WinGet + apps on Windows 11 Multi-Session (AVD) - CSE & GitHub safe
+    Installs WinGet and optional applications on AVD session hosts.
 #>
 
 # -------------------------------------------------
-# CONFIG - EDIT THIS
+# CONFIG
 # -------------------------------------------------
 $AppsToInstall = @(
-    "Microsoft.WindowsCamera"
+    "Google.Chrome",
+    "Notepad++.Notepad++",
     "Microsoft.Teams"
-    "Google.Chrome"
-    "Notepad++.Notepad++"
 )
 
-# -------------------------------------------------
-# FIXED URLs (Oct 30, 2025) - NO API CALLS
-# -------------------------------------------------
+# Winget build (2025-10 verified)
 $WinGet = @{
     Version     = "1.9.0"
     BundleUrl   = "https://github.com/microsoft/winget-cli/releases/download/v1.9.0/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
@@ -26,7 +22,6 @@ $WinGet = @{
 }
 
 $VCLibsBase = "https://aka.ms/Microsoft.VCLibs.{0}.14.00.Desktop.appx"
-
 $UIXaml = @{
     Version   = "2.8.7"
     NuGetUrl  = "https://www.nuget.org/api/v2/package/Microsoft.UI.Xaml/2.8.7"
@@ -34,14 +29,14 @@ $UIXaml = @{
 }
 
 # -------------------------------------------------
-# Temp folder
+# TEMP FOLDER
 # -------------------------------------------------
 $TempDir = Join-Path $env:TEMP "WinGet_AVD_$(Get-Random)"
 New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
 Write-Host "Temp folder: $TempDir"
 
 # -------------------------------------------------
-# Helpers
+# FUNCTIONS
 # -------------------------------------------------
 function Get-Arch {
     switch ($env:PROCESSOR_ARCHITECTURE) {
@@ -54,92 +49,85 @@ function Get-Arch {
 function Download ($Url, $Dest) {
     if (-not $Url) { throw "URL is empty" }
     Write-Host "Downloading $Url -> $Dest"
-    Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -ErrorAction Stop
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -ErrorAction Stop
+    } catch {
+        throw "Download failed: $Url — $($_.Exception.Message)"
+    }
 }
 
 # -------------------------------------------------
-# 1. Architecture
+# 1. DETECT ARCH
 # -------------------------------------------------
 $arch = Get-Arch
 Write-Host "Architecture: $arch"
 
 # -------------------------------------------------
-# 2. Download WinGet
+# 2. DOWNLOAD FILES
 # -------------------------------------------------
 $bundlePath  = Join-Path $TempDir "WinGet.msixbundle"
 $licensePath = Join-Path $TempDir "License1.xml"
 Download $WinGet.BundleUrl  $bundlePath
 Download $WinGet.LicenseUrl $licensePath
 
-# -------------------------------------------------
-# 3. VCLibs
-# -------------------------------------------------
-$vclibsUrl  = $VCLibsBase -f $arch
 $vclibsPath = Join-Path $TempDir "VCLibs.$arch.appx"
-Download $vclibsUrl $vclibsPath
+Download ($VCLibsBase -f $arch) $vclibsPath
 
-# -------------------------------------------------
-# 4. UI.Xaml
-# -------------------------------------------------
 $zipPath = Join-Path $TempDir "UIXaml.zip"
 Download $UIXaml.NuGetUrl $zipPath
-
 $extractDir = Join-Path $TempDir "UIXamlZip"
-Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force -ErrorAction Stop
+Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
 
 $uiAppx = Join-Path $extractDir ($UIXaml.AppxPath -f $arch)
 if (-not (Test-Path $uiAppx)) { throw "UI.Xaml appx not found: $uiAppx" }
 
 # -------------------------------------------------
-# 5. Install
+# 3. INSTALL DEPENDENCIES + WINGET
 # -------------------------------------------------
-Write-Host "Installing VCLibs..."
+Write-Host "Installing dependencies and WinGet..."
+
+# Order matters: VCLibs → XAML → Winget
 Add-AppxPackage -Path $vclibsPath -ErrorAction Stop
-
-Write-Host "Installing UI.Xaml..."
 Add-AppxPackage -Path $uiAppx -ErrorAction Stop
-
-Write-Host "Installing WinGet..."
 Add-AppxPackage -Path $bundlePath -ErrorAction Stop
 
-Write-Host "Provisioning WinGet..."
-Add-AppxProvisionedPackage -Online -PackagePath $bundlePath -LicensePath $licensePath -ErrorAction Stop
+# Provision WinGet for all users (persistent on AVD)
+Add-AppxProvisionedPackage -Online -PackagePath $bundlePath -LicensePath $licensePath -ErrorAction SilentlyContinue
 
 # -------------------------------------------------
-# 6. PATH
+# 4. VALIDATE INSTALL
 # -------------------------------------------------
-$wingetExe = (Get-Item "$env:ProgramFiles\WindowsApps\Microsoft.DesktopAppInstaller_*_*\winget.exe" -ErrorAction SilentlyContinue).FullName
-if (-not $wingetExe) { $wingetExe = "$env:LOCALAPPDATA\Microsoft\WindowsApps\winget.exe" }
-if (-not (Test-Path $wingetExe)) { throw "winget.exe not found" }
+Start-Sleep -Seconds 3
+$wingetExe = Get-ChildItem "$env:ProgramFiles\WindowsApps" -Recurse -Filter "winget.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $wingetExe) { throw "winget.exe not found" }
+Write-Host "winget.exe found at: $($wingetExe.FullName)"
 
-$winGetDir = Split-Path $wingetExe -Parent
+# Add to PATH if missing
+$winGetDir = Split-Path $wingetExe.FullName -Parent
 $machinePath = [Environment]::GetEnvironmentVariable("PATH","Machine")
 if ($machinePath -notlike "*$winGetDir*") {
     [Environment]::SetEnvironmentVariable("PATH", "$machinePath;$winGetDir", "Machine")
     $env:PATH += ";$winGetDir"
 }
-Write-Host "winget.exe at: $wingetExe"
 
-# -------------------------------------------------
-# 7. Test
-# -------------------------------------------------
-$ver = & winget --version 2>&1
-if ($LASTEXITCODE) { throw "winget failed: $ver" }
+# Verify version
+$ver = & $wingetExe.FullName --version 2>&1
+if ($LASTEXITCODE) { throw "WinGet failed to launch: $ver" }
 Write-Host "WinGet version: $ver"
 
 # -------------------------------------------------
-# 8. Install Apps
+# 5. INSTALL APPS
 # -------------------------------------------------
 foreach ($app in $AppsToInstall) {
     Write-Host "Installing $app..."
-    & winget install --id $app --silent --accept-package-agreements --accept-source-agreements --force
+    & $wingetExe.FullName install --id $app --silent --accept-package-agreements --accept-source-agreements --force
     if ($LASTEXITCODE) { Write-Warning "$app failed (code $LASTEXITCODE)" }
-    else { Write-Host "$app installed" }
+    else { Write-Host "$app installed successfully" }
 }
 
 # -------------------------------------------------
-# Cleanup
+# 6. CLEANUP
 # -------------------------------------------------
 Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
-Write-Host "=== INSTALLATION COMPLETE - EXIT 0 ==="
+Write-Host "=== INSTALLATION COMPLETE ==="
 exit 0
