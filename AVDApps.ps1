@@ -1,5 +1,5 @@
 ==============================================================
-AVD Intune Enrollment & Sync – BULLETPROOF v4
+AVD Intune Enrollment and Sync - BULLETPROOF v4
 ==============================================================
 $ErrorActionPreference = 'Stop'
 $LogPath = 'C:\AVD-Provision\IntuneSync.log'
@@ -14,8 +14,8 @@ Write-Host $logMessage
 if (-not (Test-Path 'C:\AVD-Provision')) {
 New-Item -ItemType Directory -Path 'C:\AVD-Provision' -Force | Out-Null
 }
-Write-Log "=== AVD Intune Enrollment & Sync v4 Started ==="
-=== Wait for internet (FIXED SCOPE) ===
+Write-Log "=== AVD Intune Enrollment and Sync v4 Started ==="
+=== Wait for internet (robust check) ===
 $timeout = 300
 $timer = [Diagnostics.Stopwatch]::StartNew()
 $internetReady = $false
@@ -144,4 +144,4 @@ Restart-Service -Name "IntuneManagementExtension" -Force -ErrorAction SilentlyCo
 catch {
 Write-Log "WARNING: Intune sync failed: $($_.Exception.Message)"
 }
-Write-Log "=== AVD Intune Enrollment & Sync v4 COMPLETE ==="
+Write-Log "=== AVD Intune Enrollment and Sync v4 COMPLETE ==="
