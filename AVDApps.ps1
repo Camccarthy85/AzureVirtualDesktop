@@ -1,5 +1,5 @@
 # ==============================================================
-# AVD Intune Enrollment & Sync – BULLETPROOF
+# AVD Intune Enrollment & Sync – BULLETPROOF v2
 # ==============================================================
 
 $ErrorActionPreference = 'Stop'
@@ -17,7 +17,7 @@ function Write-Log {
 if (-not (Test-Path 'C:\AVD-Provision')) {
     New-Item -ItemType Directory -Path 'C:\AVD-Provision' -Force | Out-Null
 }
-Write-Log "=== AVD Intune Enrollment & Sync Started ==="
+Write-Log "=== AVD Intune Enrollment & Sync v2 Started ==="
 
 # === Wait for internet (robust check) ===
 $timeout = 300
@@ -36,7 +36,7 @@ while (-not $internetReady -and $timer.Elapsed.TotalSeconds -lt $timeout) {
             }
         }
         catch {
-            Write-Log "Internet check failed for $url : $($_.Exception.Message)"
+            Write-Log "Internet check failed for $url: $($_.Exception.Message)"
         }
     }
     if (-not $internetReady) {
@@ -51,36 +51,41 @@ if (-not $internetReady) {
 
 # === Check & Force Entra ID Join ===
 Write-Log "Checking Entra ID join status..."
-$dsreg = dsregcmd /status
-$joinStatus = ($dsreg | Select-String "AzureAdJoined : YES").Count -gt 0
+try {
+    $dsregOutput = & dsregcmd.exe /status 2>&1
+    $joinStatus = ($dsregOutput | Select-String "AzureAdJoined : YES").Count -gt 0
 
-if (-not $joinStatus) {
-    Write-Log "Not Entra ID joined. Attempting to join..."
-    try {
-        # Force Entra ID join
-        $result = dsregcmd /join /debug
-        Write-Log "Entra ID join result: $result"
-        
-        # Wait up to 2 min for join to complete
-        $joinTimer = [Diagnostics.Stopwatch]::StartNew()
-        while (($joinTimer.Elapsed.TotalSeconds -lt 120) -and (-not ($dsregcmd /status | Select-String "AzureAdJoined : YES"))) {
-            Write-Log "Waiting for Entra ID join..."
-            Start-Sleep -Seconds 10
+    if (-not $joinStatus) {
+        Write-Log "Not Entra ID joined. Attempting to join..."
+        try {
+            $joinResult = & dsregcmd.exe /join /debug 2>&1
+            Write-Log "Entra ID join result: $joinResult"
+
+            # Wait up to 5 min for join
+            $joinTimer = [Diagnostics.Stopwatch]::StartNew()
+            $joinTimeout = 300
+            while (($joinTimer.Elapsed.TotalSeconds -lt $joinTimeout) -and (-not (& dsregcmd.exe /status | Select-String "AzureAdJoined : YES"))) {
+                Write-Log "Waiting for Entra ID join... ($([int]$joinTimer.Elapsed.TotalSeconds)s)"
+                Start-Sleep -Seconds 15
+            }
+            $joinStatus = (& dsregcmd.exe /status | Select-String "AzureAdJoined : YES").Count -gt 0
+            if (-not $joinStatus) {
+                Write-Log "WARNING: Entra ID join failed after $joinTimeout seconds. Proceeding to MDM enrollment."
+            }
+            else {
+                Write-Log "Entra ID joined successfully"
+            }
         }
-        $joinStatus = ($dsregcmd /status | Select-String "AzureAdJoined : YES").Count -gt 0
-        if (-not $joinStatus) {
-            Write-Log "FATAL: Entra ID join failed after 120 seconds"
-            exit 1
+        catch {
+            Write-Log "WARNING: Entra ID join attempt failed: $($_.Exception.Message). Proceeding to MDM enrollment."
         }
-        Write-Log "Entra ID joined successfully"
     }
-    catch {
-        Write-Log "FATAL: Entra ID join failed: $($_.Exception.Message)"
-        exit 1
+    else {
+        Write-Log "Already Entra ID joined"
     }
 }
-else {
-    Write-Log "Already Entra ID joined"
+catch {
+    Write-Log "WARNING: Error checking Entra ID join status: $($_.Exception.Message). Proceeding to MDM enrollment."
 }
 
 # === Force Intune MDM Enrollment ===
@@ -90,35 +95,33 @@ $mdmStatus = (Get-CimInstance -Namespace "root\cimv2\mdm\dmmap" -ClassName "MDM_
 if (-not $mdmStatus) {
     Write-Log "Not enrolled in Intune. Forcing enrollment..."
     try {
-        # Trigger MDM enrollment
         $namespace = "root\cimv2\mdm\dmmap"
         $class = "MDM_Scope01"
         $obj = Get-CimInstance -Namespace $namespace -ClassName $class -ErrorAction Stop
         if ($obj) {
             Invoke-CimMethod -Namespace $namespace -ClassName $class -MethodName Enroll -Arguments @{FriendlyName=$obj.FriendlyName; SessionId=(New-Guid).Guid} | Out-Null
             Write-Log "MDM enrollment triggered"
-            
-            # Wait up to 2 min for enrollment
+
+            # Wait up to 5 min for enrollment
             $enrollTimer = [Diagnostics.Stopwatch]::StartNew()
-            while (($enrollTimer.Elapsed.TotalSeconds -lt 120) -and (-not (Get-CimInstance -Namespace $namespace -ClassName "MDM_DevDetail_Ext01" -ErrorAction SilentlyContinue))) {
-                Write-Log "Waiting for MDM enrollment..."
-                Start-Sleep -Seconds 10
+            while (($enrollTimer.Elapsed.TotalSeconds -lt 300) -and (-not (Get-CimInstance -Namespace $namespace -ClassName "MDM_DevDetail_Ext01" -ErrorAction SilentlyContinue))) {
+                Write-Log "Waiting for MDM enrollment... ($([int]$enrollTimer.Elapsed.TotalSeconds)s)"
+                Start-Sleep -Seconds 15
             }
             $mdmStatus = (Get-CimInstance -Namespace $namespace -ClassName "MDM_DevDetail_Ext01" -ErrorAction SilentlyContinue).DeviceName
             if (-not $mdmStatus) {
-                Write-Log "FATAL: MDM enrollment failed after 120 seconds"
-                exit 1
+                Write-Log "WARNING: MDM enrollment failed after 300 seconds"
             }
-            Write-Log "Intune MDM enrolled successfully"
+            else {
+                Write-Log "Intune MDM enrolled successfully: $mdmStatus"
+            }
         }
         else {
-            Write-Log "FATAL: MDM_Scope01 not found"
-            exit 1
+            Write-Log "WARNING: MDM_Scope01 not found"
         }
     }
     catch {
-        Write-Log "FATAL: MDM enrollment failed: $($_.Exception.Message)"
-        exit 1
+        Write-Log "WARNING: MDM enrollment failed: $($_.Exception.Message)"
     }
 }
 else {
@@ -135,16 +138,16 @@ try {
         Invoke-CimMethod -Namespace $namespace -ClassName $class -MethodName UpdateScanMethod | Out-Null
         Write-Log "Intune policy/app sync triggered"
 
-        # Wait up to 5 min for sync to complete
+        # Wait up to 10 min for sync
         $syncTimer = [Diagnostics.Stopwatch]::StartNew()
-        while ($syncTimer.Elapsed.TotalSeconds -lt 300) {
+        while ($syncTimer.Elapsed.TotalSeconds -lt 600) {
             $syncStatus = Get-CimInstance -Namespace $namespace -ClassName $class -ErrorAction SilentlyContinue
             if ($syncStatus.LastSyncStatus -eq 0) {
                 Write-Log "Intune sync completed successfully"
                 break
             }
             Write-Log "Waiting for Intune sync... ($([int]$syncTimer.Elapsed.TotalSeconds)s)"
-            Start-Sleep -Seconds 15
+            Start-Sleep -Seconds 20
         }
         if ($syncStatus.LastSyncStatus -ne 0) {
             Write-Log "WARNING: Intune sync did not complete successfully"
@@ -154,7 +157,7 @@ try {
         Write-Log "WARNING: Could not find MDM_EnterpriseModernAppManagement_AppManagement01"
     }
 
-    # Restart Intune Management Extension for immediate processing
+    # Restart Intune Management Extension
     Write-Log "Restarting Intune Management Extension..."
     Restart-Service -Name "IntuneManagementExtension" -Force -ErrorAction SilentlyContinue
 }
@@ -162,4 +165,4 @@ catch {
     Write-Log "WARNING: Intune sync failed: $($_.Exception.Message)"
 }
 
-Write-Log "=== AVD Intune Enrollment & Sync COMPLETE ==="
+Write-Log "=== AVD Intune Enrollment & Sync v2 COMPLETE ==="
