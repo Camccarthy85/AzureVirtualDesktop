@@ -1,134 +1,90 @@
 #Requires -RunAsAdministrator
-#Requires -Version 5.1
-<#
-.SYNOPSIS
-    Installs WinGet and optional applications on AVD session hosts.
-#>
 
 # -------------------------------------------------
-# CONFIG
+# 1. Install Chocolatey (official one-liner)
 # -------------------------------------------------
-$AppsToInstall = @(
-    "Google.Chrome",
-    "Notepad++.Notepad++",
-    "Microsoft.Teams"
+Write-Host "Installing Chocolatey..." -ForegroundColor Cyan
+Set-ExecutionPolicy Bypass -Scope Process -Force
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+
+# Verify installation
+if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+    Throw "Chocolatey failed to install."
+}
+Write-Host "Chocolatey installed successfully." -ForegroundColor Green
+
+# -------------------------------------------------
+# 2. Install applications
+# -------------------------------------------------
+$apps = @(
+    'notepadplusplus'
+    'googlechrome'
+    'putty'
+    'winscp'
 )
 
-# Winget build (2025-10 verified)
-$WinGet = @{
-    Version     = "1.9.0"
-    BundleUrl   = "https://github.com/microsoft/winget-cli/releases/download/v1.9.0/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
-    LicenseUrl  = "https://github.com/microsoft/winget-cli/releases/download/v1.9.0/License1.xml"
-}
-
-$VCLibsBase = "https://aka.ms/Microsoft.VCLibs.{0}.14.00.Desktop.appx"
-$UIXaml = @{
-    Version   = "2.8.7"
-    NuGetUrl  = "https://www.nuget.org/api/v2/package/Microsoft.UI.Xaml/2.8.7"
-    AppxPath  = "tools\AppX\{0}\Release\Microsoft.UI.Xaml.2.8.appx"
-}
-
-# -------------------------------------------------
-# TEMP FOLDER
-# -------------------------------------------------
-$TempDir = Join-Path $env:TEMP "WinGet_AVD_$(Get-Random)"
-New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
-Write-Host "Temp folder: $TempDir"
-
-# -------------------------------------------------
-# FUNCTIONS
-# -------------------------------------------------
-function Get-Arch {
-    switch ($env:PROCESSOR_ARCHITECTURE) {
-        "AMD64" { "x64" }
-        "ARM64" { "arm64" }
-        default { "x86" }
-    }
-}
-
-function Download ($Url, $Dest) {
-    if (-not $Url) { throw "URL is empty" }
-    Write-Host "Downloading $Url -> $Dest"
-    try {
-        Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -ErrorAction Stop
-    } catch {
-        throw ("Download failed: " + $Url + " - " + $_.Exception.Message)
+Write-Host "Installing applications via Chocolatey..." -ForegroundColor Cyan
+foreach ($app in $apps) {
+    Write-Host "  Installing $app..." -ForegroundColor Yellow
+    choco install $app -y --force --no-progress --limit-output
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Failed to install $app (exit code: $LASTEXITCODE)"
+    } else {
+        Write-Host "  $app installed." -ForegroundColor Green
     }
 }
 
 # -------------------------------------------------
-# 1. DETECT ARCH
+# 3. FULLY REMOVE Chocolatey (no traces)
 # -------------------------------------------------
-$arch = Get-Arch
-Write-Host "Architecture: $arch"
+Write-Host "Removing Chocolatey and all traces..." -ForegroundColor Cyan
 
-# -------------------------------------------------
-# 2. DOWNLOAD FILES
-# -------------------------------------------------
-$bundlePath  = Join-Path $TempDir "WinGet.msixbundle"
-$licensePath = Join-Path $TempDir "License1.xml"
-Download $WinGet.BundleUrl  $bundlePath
-Download $WinGet.LicenseUrl $licensePath
+# Stop any running choco processes
+Get-Process -Name choco -ErrorAction SilentlyContinue | Stop-Process -Force
 
-$vclibsPath = Join-Path $TempDir "VCLibs.$arch.appx"
-Download ($VCLibsBase -f $arch) $vclibsPath
+# Remove Chocolatey bin from PATH (current session)
+$env:PATH = ($env:PATH.Split(';') | Where-Object { $_ -notmatch 'chocolatey\\bin' }) -join ';'
 
-$zipPath = Join-Path $TempDir "UIXaml.zip"
-Download $UIXaml.NuGetUrl $zipPath
-$extractDir = Join-Path $TempDir "UIXamlZip"
-Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
-
-$uiAppx = Join-Path $extractDir ($UIXaml.AppxPath -f $arch)
-if (-not (Test-Path $uiAppx)) { throw "UI.Xaml appx not found: $uiAppx" }
-
-# -------------------------------------------------
-# 3. INSTALL DEPENDENCIES + WINGET
-# -------------------------------------------------
-Write-Host "Installing dependencies and WinGet..."
-
-# Order matters: VCLibs → XAML → Winget
-Add-AppxPackage -Path $vclibsPath -ErrorAction Stop
-Add-AppxPackage -Path $uiAppx -ErrorAction Stop
-Add-AppxPackage -Path $bundlePath -ErrorAction Stop
-
-# Provision WinGet for all users (persistent on AVD)
-Add-AppxProvisionedPackage -Online -PackagePath $bundlePath -LicensePath $licensePath -ErrorAction SilentlyContinue
-
-# -------------------------------------------------
-# 4. VALIDATE INSTALL
-# -------------------------------------------------
-Start-Sleep -Seconds 3
-$wingetExe = Get-ChildItem "$env:ProgramFiles\WindowsApps" -Recurse -Filter "winget.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $wingetExe) { throw "winget.exe not found" }
-Write-Host "winget.exe found at: $($wingetExe.FullName)"
-
-# Add to PATH if missing
-$winGetDir = Split-Path $wingetExe.FullName -Parent
-$machinePath = [Environment]::GetEnvironmentVariable("PATH","Machine")
-if ($machinePath -notlike "*$winGetDir*") {
-    [Environment]::SetEnvironmentVariable("PATH", "$machinePath;$winGetDir", "Machine")
-    $env:PATH += ";$winGetDir"
+# Remove Chocolatey folder
+$chocoPath = Join-Path $env:ProgramData 'chocolatey'
+if (Test-Path $chocoPath) {
+    Remove-Item $chocoPath -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "Removed $chocoPath" -ForegroundColor Green
 }
 
-# Verify version
-$ver = & $wingetExe.FullName --version 2>&1
-if ($LASTEXITCODE) { throw "WinGet failed to launch: $ver" }
-Write-Host "WinGet version: $ver"
+# Remove Chocolatey environment variables
+[Environment]::SetEnvironmentVariable('ChocolateyInstall', $null, 'Machine')
+[Environment]::SetEnvironmentVariable('ChocolateyLastPathUpdate', $null, 'Machine')
+Remove-Item Env:\ChocolateyInstall -ErrorAction SilentlyContinue
+Remove-Item Env:\ChocolateyLastPathUpdate -ErrorAction SilentlyContinue
 
-# -------------------------------------------------
-# 5. INSTALL APPS
-# -------------------------------------------------
-foreach ($app in $AppsToInstall) {
-    Write-Host "Installing $app..."
-    & $wingetExe.FullName install --id $app --silent --accept-package-agreements --accept-source-agreements --force
-    if ($LASTEXITCODE) { Write-Warning "$app failed (code $LASTEXITCODE)" }
-    else { Write-Host "$app installed successfully" }
+# Remove Chocolatey shim files from System32 (if any)
+Get-ChildItem "$env:SystemRoot\System32" -Filter "*.shim" | Remove-Item -Force -ErrorAction SilentlyContinue
+
+# Remove Chocolatey from machine PATH
+$machinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+$newMachinePath = ($machinePath -split ';' | Where-Object { $_ -notmatch 'chocolatey' }) -join ';'
+[Environment]::SetEnvironmentVariable('PATH', $newMachinePath, 'Machine')
+
+# Remove Chocolatey tools location if exists
+$toolsPath = Join-Path $env:ProgramData 'chocolatey\bin'
+if (Test-Path $toolsPath) {
+    Remove-Item $toolsPath -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# -------------------------------------------------
-# 6. CLEANUP
-# -------------------------------------------------
-Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
-Write-Host "=== INSTALLATION COMPLETE ==="
-exit 0
+# Final cleanup of any leftover .old files
+Get-ChildItem "$env:ProgramData\chocolatey" -Recurse -Include *.old -ErrorAction SilentlyContinue | Remove-Item -Force
 
+Write-Host "Chocolatey completely removed." -ForegroundColor Green
+
+# -------------------------------------------------
+# 4. Final verification
+# -------------------------------------------------
+if (Get-Command choco -ErrorAction SilentlyContinue) {
+    Write-Warning "choco command still available — manual cleanup may be needed."
+} else {
+    Write-Host "choco command no longer exists." -ForegroundColor Green
+}
+
+Write-Host "Deployment script completed successfully." -ForegroundColor Cyan
