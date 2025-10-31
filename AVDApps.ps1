@@ -63,54 +63,7 @@ foreach ($app in $apps) {
 }
 
 # -------------------------------------------------
-# 3. Install PuTTY via Official MSI (FIX: Use ProgramData\Temp)
-# -------------------------------------------------
-Write-Output "Installing PuTTY via official MSI..."
-
-# Use C:\ProgramData\Temp — 100% writable by SYSTEM
-$tempDir = "$env:ProgramData\Temp"
-$msiPath = Join-Path $tempDir "putty-installer.msi"
-
-# Create temp dir if needed
-if (-not (Test-Path $tempDir)) {
-    New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
-    Write-Output "Created temp directory: $tempDir"
-}
-
-$msiUrl = "https://the.earth.li/~sgtatham/putty/0.81/w64/putty-64bit-0.81-installer.msi"
-
-try {
-    Write-Output "Downloading PuTTY MSI to $msiPath..."
-    Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath -UseBasicParsing -TimeoutSec 300
-
-    if (-not (Test-Path $msiPath)) {
-        throw "MSI not downloaded: $msiPath"
-    }
-
-    Write-Output "Installing PuTTY silently..."
-    $proc = Start-Process msiexec.exe -ArgumentList @(
-        "/i", "`"$msiPath`"",
-        "/quiet", "/norestart",
-        "ADDLOCAL=DesktopShortcut,StartMenuShortcuts"
-    ) -Wait -PassThru
-
-    if ($proc.ExitCode -eq 0) {
-        Write-Output "PuTTY MSI installed successfully."
-    } else {
-        Write-Error "PuTTY MSI install failed with exit code: $($proc.ExitCode)"
-        # Do NOT throw — continue
-    }
-} catch {
-    Write-Error "PuTTY MSI install failed: $_"
-} finally {
-    if (Test-Path $msiPath) {
-        Remove-Item $msiPath -Force -ErrorAction Continue
-        Write-Output "Cleaned up: $msiPath"
-    }
-}
-
-# -------------------------------------------------
-# 4. Configure FSLogix Profile Container (Registry)
+# 3. Configure FSLogix Profile Container (Registry)
 # -------------------------------------------------
 Write-Output "Configuring FSLogix Profile Container settings..."
 
@@ -142,7 +95,7 @@ foreach ($name in $fslogixSettings.Keys) {
 Write-Output "FSLogix settings applied."
 
 # -------------------------------------------------
-# 5. FULLY REMOVE Chocolatey
+# 4. FULLY REMOVE Chocolatey
 # -------------------------------------------------
 Write-Output "Removing Chocolatey..."
 
@@ -173,10 +126,11 @@ Get-ChildItem "$env:SystemRoot\System32" -Filter "*.shim" -ErrorAction SilentlyC
 Write-Output "Chocolatey fully removed."
 
 # -------------------------------------------------
-# 6. Final Success
+# 5. Final Success
 # -------------------------------------------------
 Write-Output "=== DEPLOYMENT COMPLETED SUCCESSFULLY ==="
 Write-Output "Log saved to: $logPath"
+Write-Output "PuTTY has been REMOVED from this deployment."
 Stop-Transcript
 
 exit 0
