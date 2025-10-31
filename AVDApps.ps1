@@ -63,17 +63,18 @@ foreach ($app in $apps) {
 }
 
 # -------------------------------------------------
-# 3. Install PuTTY via Official MSI (FIXED: Use C:\Windows\Temp)
+# 3. Install PuTTY via Official MSI (FIX: Use ProgramData\Temp)
 # -------------------------------------------------
 Write-Output "Installing PuTTY via official MSI..."
 
-# Use C:\Windows\Temp — always exists and writable by SYSTEM
-$tempDir = "$env:SystemRoot\Temp"
+# Use C:\ProgramData\Temp — 100% writable by SYSTEM
+$tempDir = "$env:ProgramData\Temp"
 $msiPath = Join-Path $tempDir "putty-installer.msi"
 
-# Ensure directory exists
+# Create temp dir if needed
 if (-not (Test-Path $tempDir)) {
     New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
+    Write-Output "Created temp directory: $tempDir"
 }
 
 $msiUrl = "https://the.earth.li/~sgtatham/putty/0.81/w64/putty-64bit-0.81-installer.msi"
@@ -83,12 +84,12 @@ try {
     Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath -UseBasicParsing -TimeoutSec 300
 
     if (-not (Test-Path $msiPath)) {
-        throw "MSI file not found after download."
+        throw "MSI not downloaded: $msiPath"
     }
 
     Write-Output "Installing PuTTY silently..."
     $proc = Start-Process msiexec.exe -ArgumentList @(
-        "/i", $msiPath,
+        "/i", "`"$msiPath`"",
         "/quiet", "/norestart",
         "ADDLOCAL=DesktopShortcut,StartMenuShortcuts"
     ) -Wait -PassThru
@@ -97,6 +98,7 @@ try {
         Write-Output "PuTTY MSI installed successfully."
     } else {
         Write-Error "PuTTY MSI install failed with exit code: $($proc.ExitCode)"
+        # Do NOT throw — continue
     }
 } catch {
     Write-Error "PuTTY MSI install failed: $_"
