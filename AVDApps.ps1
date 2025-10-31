@@ -11,8 +11,10 @@ Write-Output "=== AVD App Deployment Started: $(Get-Date) ==="
 # -------------------------------------------------
 Write-Output "Installing Chocolatey..."
 Set-ExecutionPolicy Bypass -Scope Process -Force
-[System.Net.ServiceManager]::SecurityProtocol = 
-    [System.Net.ServiceManager]::SecurityProtocol -bor 3072
+
+# FIXED: Correct type name
+[System.Net.ServicePointManager]::SecurityProtocol = 
+    [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
 
 try {
     Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
