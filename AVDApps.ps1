@@ -63,15 +63,28 @@ foreach ($app in $apps) {
 }
 
 # -------------------------------------------------
-# 3. Install PuTTY via Official MSI (Full Install)
+# 3. Install PuTTY via Official MSI (FIXED: Use C:\Windows\Temp)
 # -------------------------------------------------
 Write-Output "Installing PuTTY via official MSI..."
+
+# Use C:\Windows\Temp — always exists and writable by SYSTEM
+$tempDir = "$env:SystemRoot\Temp"
+$msiPath = Join-Path $tempDir "putty-installer.msi"
+
+# Ensure directory exists
+if (-not (Test-Path $tempDir)) {
+    New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
+}
+
 $msiUrl = "https://the.earth.li/~sgtatham/putty/0.81/w64/putty-64bit-0.81-installer.msi"
-$msiPath = "$env:TEMP\putty-installer.msi"
 
 try {
-    Write-Output "Downloading PuTTY MSI..."
-    Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath -UseBasicParsing
+    Write-Output "Downloading PuTTY MSI to $msiPath..."
+    Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath -UseBasicParsing -TimeoutSec 300
+
+    if (-not (Test-Path $msiPath)) {
+        throw "MSI file not found after download."
+    }
 
     Write-Output "Installing PuTTY silently..."
     $proc = Start-Process msiexec.exe -ArgumentList @(
@@ -88,7 +101,10 @@ try {
 } catch {
     Write-Error "PuTTY MSI install failed: $_"
 } finally {
-    if (Test-Path $msiPath) { Remove-Item $msiPath -Force }
+    if (Test-Path $msiPath) {
+        Remove-Item $msiPath -Force -ErrorAction Continue
+        Write-Output "Cleaned up: $msiPath"
+    }
 }
 
 # -------------------------------------------------
@@ -97,8 +113,6 @@ try {
 Write-Output "Configuring FSLogix Profile Container settings..."
 
 $fslogixKey = 'HKLM:\SOFTWARE\FSLogix\Profiles'
-
-# Create key if not exists
 if (-not (Test-Path $fslogixKey)) {
     New-Item -Path $fslogixKey -Force | Out-Null
 }
@@ -161,7 +175,6 @@ Write-Output "Chocolatey fully removed."
 # -------------------------------------------------
 Write-Output "=== DEPLOYMENT COMPLETED SUCCESSFULLY ==="
 Write-Output "Log saved to: $logPath"
-Write-Output "FSLogix settings written to: $fslogixKey"
 Stop-Transcript
 
 exit 0
