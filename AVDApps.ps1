@@ -11,8 +11,6 @@ Write-Output "=== AVD App Deployment Started: $(Get-Date) ==="
 # -------------------------------------------------
 Write-Output "Installing Chocolatey..."
 Set-ExecutionPolicy Bypass -Scope Process -Force
-
-# FIXED: Correct type name
 [System.Net.ServicePointManager]::SecurityProtocol = 
     [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
 
@@ -24,13 +22,12 @@ try {
     throw
 }
 
-# Verify choco
 if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
     throw "choco command not found after install."
 }
 
 # -------------------------------------------------
-# 2. Install Applications via Chocolatey (except PuTTY)
+# 2. Install Applications via Chocolatey
 # -------------------------------------------------
 $apps = @(
     @{ Name = 'Notepad++';           ID = 'notepadplusplus';     Version = $null }
@@ -39,7 +36,6 @@ $apps = @(
     @{ Name = 'Visual Studio Code';  ID = 'vscode';              Version = $null }
     @{ Name = 'mRemoteNG';           ID = 'mremoteng';           Version = $null }
     @{ Name = 'SSMS 21';             ID = 'sql-server-management-studio'; Version = $null }
-    @{ Name = 'RSAT Active Directory'; ID = 'rsat';            Version = $null }
 )
 
 foreach ($app in $apps) {
@@ -96,7 +92,41 @@ try {
 }
 
 # -------------------------------------------------
-# 4. FULLY REMOVE Chocolatey
+# 4. Configure FSLogix Profile Container (Registry)
+# -------------------------------------------------
+Write-Output "Configuring FSLogix Profile Container settings..."
+
+$fslogixKey = 'HKLM:\SOFTWARE\FSLogix\Profiles'
+
+# Create key if not exists
+if (-not (Test-Path $fslogixKey)) {
+    New-Item -Path $fslogixKey -Force | Out-Null
+}
+
+$fslogixSettings = @{
+    'Enabled'                          = 1
+    'VHDLocations'                     = '\\ipcu1avdpzsa1.file.core.windows.net\fslogix-wvd-fei-desktop-cu1-pool'
+    'RedirectionXMLSourceFolder'       = '\\ipcu1avdpzsa1.file.core.windows.net\avd-misc-files'
+    'DeleteLocalProfileWhenVHDShouldApply' = 1
+    'IsDynamic'                        = 1
+    'PreventLoginWithFailure'          = 1
+    'PreventLoginWithTempProfile'      = 1
+    'CleanupInvalidSessions'           = 1
+    'FlipFlopProfileDirectoryName'     = 1
+    'VolumeType'                       = 'vhdx'
+}
+
+foreach ($name in $fslogixSettings.Keys) {
+    $value = $fslogixSettings[$name]
+    $type = if ($value -is [int]) { 'DWord' } else { 'String' }
+    Set-ItemProperty -Path $fslogixKey -Name $name -Value $value -Type $type -Force
+    Write-Output "  Set $name = $value"
+}
+
+Write-Output "FSLogix settings applied."
+
+# -------------------------------------------------
+# 5. FULLY REMOVE Chocolatey
 # -------------------------------------------------
 Write-Output "Removing Chocolatey..."
 
@@ -127,10 +157,11 @@ Get-ChildItem "$env:SystemRoot\System32" -Filter "*.shim" -ErrorAction SilentlyC
 Write-Output "Chocolatey fully removed."
 
 # -------------------------------------------------
-# 5. Final Success
+# 6. Final Success
 # -------------------------------------------------
 Write-Output "=== DEPLOYMENT COMPLETED SUCCESSFULLY ==="
 Write-Output "Log saved to: $logPath"
+Write-Output "FSLogix settings written to: $fslogixKey"
 Stop-Transcript
 
 exit 0
