@@ -74,8 +74,8 @@ if (-not (Test-Path $fslogixKey)) {
 
 $fslogixSettings = @{
     'Enabled'                          = 1
-    'VHDLocations'                     = '\\ipcu1avdpzsa1.file.core.windows.net\fslogix-wvd-fei-desktop-cu1-pool'
-    'RedirectionXMLSourceFolder'       = '\\ipcu1avdpzsa1.file.core.windows.net\avd-misc-files'
+    'VHDLocations'                     = '\\flpcu1avdpzsa1.file.core.windows.net\fslogix-wvd-fei-desktop-cu1-pool'
+    'RedirectionXMLSourceFolder'       = '\\flpcu1avdpzsa1.file.core.windows.net\avd-misc-files'
     'DeleteLocalProfileWhenVHDShouldApply' = 1
     'IsDynamic'                        = 1
     'PreventLoginWithFailure'          = 1
@@ -134,3 +134,4 @@ Write-Output "PuTTY has been REMOVED from this deployment."
 Stop-Transcript
 
 exit 0
+
