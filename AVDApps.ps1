@@ -167,7 +167,43 @@ if (-not (Test-AppInstalled "PuTTY")) {
     }
 }
 
-# Cleanup
+# Configure FSLogix Profile Containers Registry Settings
+Write-Host "Configuring FSLogix Profile Containers..."
+$fslogixPath = "HKLM:\SOFTWARE\FSLogix\Profiles"
+if (!(Test-Path $fslogixPath)) {
+    New-Item -Path $fslogixPath -Force | Out-Null
+}
+
+# Enable Profile Containers
+Set-ItemProperty -Path $fslogixPath -Name "Enabled" -Value 1 -Type DWord
+
+# VHD Locations
+Set-ItemProperty -Path $fslogixPath -Name "VHDLocations" -Value @("\\vpcuvadpsa1.file.core.windows.net\fslogix-vhd-desktop-c1-pool") -Type MultiString
+
+# Delete local profile when VHD should apply
+Set-ItemProperty -Path $fslogixPath -Name "DeleteLocalProfileWhenVHDShouldApply" -Value 1 -Type DWord
+
+# Is dynamic VHD
+Set-ItemProperty -Path $fslogixPath -Name "IsDynamic" -Value 1 -Type DWord
+
+# Prevent login with failure
+Set-ItemProperty -Path $fslogixPath -Name "PreventLoginWithFailure" -Value 1 -Type DWord
+
+# Prevent login with temp profile
+Set-ItemProperty -Path $fslogixPath -Name "PreventLoginWithTempProfile" -Value 1 -Type DWord
+
+# Redirection XML source folder
+Set-ItemProperty -Path $fslogixPath -Name "RedirXMLSourceFolder" -Value "\\vpcuvadpsa1.file.core.windows.net\vad-misc-files" -Type String
+
+# Flip Flop Profile Directory Name
+Set-ItemProperty -Path $fslogixPath -Name "FlipFlopProfileDirectoryName" -Value 1 -Type DWord
+
+# Volume Type VHDX
+Set-ItemProperty -Path $fslogixPath -Name "VolumeType" -Value "vhdx" -Type String
+
+Write-Host "FSLogix configuration completed."
+
+# Cleanup (optional)
 # Remove-Item -Path $tempDir -Recurse -Force
 
-Write-Host "All installations completed."
+Write-Host "All installations and configurations completed."
