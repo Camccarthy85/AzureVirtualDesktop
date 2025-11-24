@@ -1,137 +1,173 @@
-#Requires -RunAsAdministrator
-$ErrorActionPreference = 'Stop'
+# PowerShell Script to Download and Install Latest Versions of Specified Apps
+# Uses only built-in PowerShell cmdlets (Invoke-WebRequest, Invoke-RestMethod, Start-Process, etc.)
+# Run as Administrator for installations
 
-# Start logging
-$logPath = "C:\AVDApps.log"
-Start-Transcript -Path $logPath -Append -Force
-Write-Output "=== AVD App Deployment Started: $(Get-Date) ==="
-
-# -------------------------------------------------
-# 1. Install Chocolatey
-# -------------------------------------------------
-Write-Output "Installing Chocolatey..."
-Set-ExecutionPolicy Bypass -Scope Process -Force
-[System.Net.ServicePointManager]::SecurityProtocol = 
-    [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-
-try {
-    Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-    Write-Output "Chocolatey installed."
-} catch {
-    Write-Error "Failed to install Chocolatey: $_"
-    throw
-}
-
-if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
-    throw "choco command not found after install."
-}
-
-# -------------------------------------------------
-# 2. Install Applications via Chocolatey
-# -------------------------------------------------
-$apps = @(
-    @{ Name = 'Notepad++';           ID = 'notepadplusplus';     Version = $null }
-    @{ Name = 'Google Chrome';       ID = 'googlechrome';        Version = $null }
-    @{ Name = 'WinSCP';              ID = 'winscp';              Version = $null }
-    @{ Name = 'Visual Studio Code';  ID = 'vscode';              Version = $null }
-    @{ Name = 'mRemoteNG';           ID = 'mremoteng';           Version = $null }
-    @{ Name = 'SSMS 21';             ID = 'sql-server-management-studio'; Version = $null }
-)
-
-foreach ($app in $apps) {
-    $installArgs = @('install', $app.ID, '-y', '--force', '--no-progress', '--limit-output')
-    if ($app.Version) { $installArgs += "--version=$($app.Version)" }
-
-    Write-Output "Installing $($app.Name) ($($app.ID))..."
-    $attempt = 0
-    $maxAttempts = 3
-    do {
-        $attempt++
-        & choco @installArgs
-        if ($LASTEXITCODE -eq 0) {
-            Write-Output "$($app.Name) installed successfully."
-            break
-        } else {
-            Write-Warning "Attempt $attempt failed (exit: $LASTEXITCODE). Retrying in 5s..."
-            Start-Sleep -Seconds 5
+# Function to check if an app is installed
+function Test-AppInstalled {
+    param(
+        [string]$DisplayName
+    )
+    
+    $uninstallPaths = @(
+        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    
+    foreach ($path in $uninstallPaths) {
+        try {
+            $apps = Get-ItemProperty $path -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like "*$DisplayName*" }
+            if ($apps) {
+                Write-Host "$DisplayName is already installed. Skipping."
+                return $true
+            }
         }
-    } while ($attempt -lt $maxAttempts)
+        catch {
+            # Ignore errors if path doesn't exist
+        }
+    }
+    return $false
+}
 
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "FAILED to install $($app.Name) after $maxAttempts attempts."
+# Function to install an app from GitHub release
+function Install-GitHubApp {
+    param(
+        [string]$RepoOwner,
+        [string]$RepoName,
+        [string]$AssetPattern,
+        [string]$InstallerPath,
+        [string]$SilentArgs,
+        [string]$AppName,
+        [bool]$IsMsi = $false
+    )
+    
+    if (Test-AppInstalled $AppName) { return }
+    
+    try {
+        $latestRelease = Invoke-RestMethod "https://api.github.com/repos/$RepoOwner/$RepoName/releases/latest"
+        $asset = $latestRelease.assets | Where-Object { $_.name -match $AssetPattern } | Select-Object -First 1
+        if (-not $asset) {
+            Write-Warning "No matching asset found for $RepoName"
+            return
+        }
+        
+        $downloadUrl = $asset.browser_download_url
+        Write-Host "Downloading $RepoName from $downloadUrl"
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $InstallerPath
+        
+        Write-Host "Installing $RepoName..."
+        if ($IsMsi) {
+            Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$InstallerPath`" $SilentArgs" -Wait -NoNewWindow
+        } else {
+            Start-Process -FilePath $InstallerPath -ArgumentList $SilentArgs -Wait -NoNewWindow
+        }
+        Write-Host "$RepoName installed successfully."
+    }
+    catch {
+        Write-Error "Failed to install $RepoName : $_"
     }
 }
 
-# -------------------------------------------------
-# 3. Configure FSLogix Profile Container (Registry)
-# -------------------------------------------------
-Write-Output "Configuring FSLogix Profile Container settings..."
+# Temporary directory for downloads
+$tempDir = "$env:TEMP\AppInstallers"
+if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir | Out-Null }
 
-$fslogixKey = 'HKLM:\SOFTWARE\FSLogix\Profiles'
-if (-not (Test-Path $fslogixKey)) {
-    New-Item -Path $fslogixKey -Force | Out-Null
+# 1. Notepad++
+if (-not (Test-AppInstalled "Notepad++")) {
+    $npPath = "$tempDir\npp-installer.exe"
+    Install-GitHubApp -RepoOwner "notepad-plus-plus" -RepoName "notepad-plus-plus" -AssetPattern "Installer.*x64.*\.exe$" -InstallerPath $npPath -SilentArgs "/S" -AppName "Notepad++"
 }
 
-$fslogixSettings = @{
-    'Enabled'                          = 1
-    'VHDLocations'                     = '\\flpcu1avdpzsa1.file.core.windows.net\fslogix-wvd-fei-desktop-cu1-pool'
-    'RedirectionXMLSourceFolder'       = '\\flpcu1avdpzsa1.file.core.windows.net\avd-misc-files'
-    'DeleteLocalProfileWhenVHDShouldApply' = 1
-    'IsDynamic'                        = 1
-    'PreventLoginWithFailure'          = 1
-    'PreventLoginWithTempProfile'      = 1
-    'CleanupInvalidSessions'           = 1
-    'FlipFlopProfileDirectoryName'     = 1
-    'VolumeType'                       = 'vhdx'
+# 2. Google Chrome Enterprise x64
+if (-not (Test-AppInstalled "Google Chrome")) {
+    $chromeMsiPath = "$tempDir\GoogleChromeEnterprise.msi"
+    $chromeUrl = "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi"
+    Write-Host "Downloading Google Chrome Enterprise x64..."
+    Invoke-WebRequest -Uri $chromeUrl -OutFile $chromeMsiPath
+    Write-Host "Installing Google Chrome Enterprise..."
+    Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$chromeMsiPath`" /qn /norestart" -Wait -NoNewWindow
+    Write-Host "Google Chrome Enterprise installed successfully."
 }
 
-foreach ($name in $fslogixSettings.Keys) {
-    $value = $fslogixSettings[$name]
-    $type = if ($value -is [int]) { 'DWord' } else { 'String' }
-    Set-ItemProperty -Path $fslogixKey -Name $name -Value $value -Type $type -Force
-    Write-Output "  Set $name = $value"
+# 3. MongoDB Compass
+if (-not (Test-AppInstalled "MongoDB Compass")) {
+    $compassPageUrl = "https://www.mongodb.com/try/download/compass"
+    Write-Host "Fetching MongoDB Compass latest page..."
+    $compassContent = (Invoke-WebRequest -Uri $compassPageUrl -UseBasicParsing).Content
+    $verMatch = [regex]::Match($compassContent, '(\d+\.\d+\.\d+) \(Stable\)')
+    if ($verMatch.Success) {
+        $version = $verMatch.Groups[1].Value
+        $compassMsiUrl = "https://downloads.mongodb.com/compass/mongodb-compass-$version-win32-x64.msi"
+        $compassPath = "$tempDir\mongodb-compass.msi"
+        Write-Host "Downloading MongoDB Compass from $compassMsiUrl"
+        Invoke-WebRequest -Uri $compassMsiUrl -OutFile $compassPath
+        Write-Host "Installing MongoDB Compass..."
+        Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$compassPath`" /qn /norestart" -Wait -NoNewWindow
+        Write-Host "MongoDB Compass installed successfully."
+    } else {
+        Write-Warning "Could not find MongoDB Compass version. Skipping."
+    }
 }
 
-Write-Output "FSLogix settings applied."
-
-# -------------------------------------------------
-# 4. FULLY REMOVE Chocolatey
-# -------------------------------------------------
-Write-Output "Removing Chocolatey..."
-
-Get-Process -Name choco -ErrorAction SilentlyContinue | Stop-Process -Force -PassThru | ForEach-Object {
-    Write-Output "Stopped choco process: $($_.Id)"
+# 4. Visual Studio Code (System-wide)
+if (-not (Test-AppInstalled "Visual Studio Code")) {
+    $vscodeUrl = "https://update.code.visualstudio.com/latest/win32-x64/stable"
+    $vscodePath = "$tempDir\vscode-setup.exe"
+    Write-Host "Downloading Visual Studio Code (system-wide)..."
+    Invoke-WebRequest -Uri $vscodeUrl -OutFile $vscodePath
+    Write-Host "Installing Visual Studio Code..."
+    Start-Process -FilePath $vscodePath -ArgumentList "/VERYSILENT /NORESTART /MERGETASKS=!runcode" -Wait -NoNewWindow
+    Write-Host "Visual Studio Code installed successfully."
 }
 
-$chocoPath = Join-Path $env:ProgramData 'chocolatey'
-if (Test-Path $chocoPath) {
-    Remove-Item $chocoPath -Recurse -Force -ErrorAction Continue
-    Write-Output "Deleted: $chocoPath"
+# 5. mRemoteNG
+Install-GitHubApp -RepoOwner "mRemoteNG" -RepoName "mRemoteNG" -AssetPattern "mRemoteNG-Installer-.*\.msi$" -InstallerPath "$tempDir\mremoteng.msi" -SilentArgs "/qn /l*v `"$tempDir\mremoteng.log`" REBOOT=ReallySuppress ALLUSERS=1" -AppName "mRemoteNG" -IsMsi $true
+
+# 6. SQL Server Management Studio 22
+if (-not (Test-AppInstalled "SQL Server Management Studio")) {
+    $ssmsUrl = "https://aka.ms/ssms/22/release/vs_SSMS.exe"
+    $ssmsPath = "$tempDir\vs_SSMS.exe"
+    $ssmsInstallPath = "C:\Program Files\Microsoft SQL Server Management Studio 22\Release"
+    Write-Host "Downloading SSMS 22..."
+    Invoke-WebRequest -Uri $ssmsUrl -OutFile $ssmsPath
+    Write-Host "Installing SSMS 22..."
+    Start-Process -FilePath $ssmsPath -ArgumentList "--quiet --norestart --installPath `"$ssmsInstallPath`" --add SSMS" -Wait -NoNewWindow
+    Write-Host "SSMS 22 installed successfully."
 }
 
-@('ChocolateyInstall', 'ChocolateyLastPathUpdate') | ForEach-Object {
-    [Environment]::SetEnvironmentVariable($_, $null, 'Machine')
-    Remove-Item "Env:\$_" -ErrorAction SilentlyContinue
+# 7. RSAT Active Directory Tools
+$rsatName = "Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0"
+$rsatCap = Get-WindowsCapability -Online -Name $rsatName -ErrorAction SilentlyContinue
+if ($rsatCap -and $rsatCap.State -eq "Installed") {
+    Write-Host "RSAT Active Directory Tools are already installed. Skipping."
+} else {
+    Write-Host "Installing RSAT Active Directory Tools..."
+    Add-WindowsCapability -Online -Name $rsatName
+    Write-Host "RSAT Active Directory Tools installed successfully."
 }
 
-$machinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
-$newPath = ($machinePath -split ';' | Where-Object { $_ -notmatch 'chocolatey' -and $_ -ne '' }) -join ';'
-[Environment]::SetEnvironmentVariable('PATH', $newPath, 'Machine')
-
-Get-ChildItem "$env:SystemRoot\System32" -Filter "*.shim" -ErrorAction SilentlyContinue | ForEach-Object {
-    Remove-Item $_.FullName -Force
-    Write-Output "Removed shim: $($_.Name)"
+# 8. PuTTY
+if (-not (Test-AppInstalled "PuTTY")) {
+    # Parse the latest.html page to get version and construct MSI URL
+    $puttyPageUrl = "https://www.chiark.greenend.org.uk/~sgtatham/putty/latest.html"
+    Write-Host "Fetching PuTTY latest page..."
+    $puttyContent = (Invoke-WebRequest -Uri $puttyPageUrl -UseBasicParsing).Content
+    $versionMatch = [regex]::Match($puttyContent, 'Currently this is (\d+\.\d+)')
+    if ($versionMatch.Success) {
+        $version = $versionMatch.Groups[1].Value
+        $puttyMsiUrl = "https://the.earth.li/~sgtatham/putty/latest/w64/putty-64bit-$version-installer.msi"
+        $puttyPath = "$tempDir\putty.msi"
+        Write-Host "Downloading PuTTY from $puttyMsiUrl"
+        Invoke-WebRequest -Uri $puttyMsiUrl -OutFile $puttyPath
+        Write-Host "Installing PuTTY..."
+        Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$puttyPath`" /quiet /norestart" -Wait -NoNewWindow
+        Write-Host "PuTTY installed successfully."
+    } else {
+        Write-Warning "Could not find PuTTY version. Skipping."
+    }
 }
 
-Write-Output "Chocolatey fully removed."
+# Cleanup
+# Remove-Item -Path $tempDir -Recurse -Force
 
-# -------------------------------------------------
-# 5. Final Success
-# -------------------------------------------------
-Write-Output "=== DEPLOYMENT COMPLETED SUCCESSFULLY ==="
-Write-Output "Log saved to: $logPath"
-Write-Output "PuTTY has been REMOVED from this deployment."
-Stop-Transcript
-
-exit 0
-
+Write-Host "All installations completed."
