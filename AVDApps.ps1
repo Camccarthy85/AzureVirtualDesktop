@@ -178,7 +178,7 @@ if (!(Test-Path $fslogixPath)) {
 Set-ItemProperty -Path $fslogixPath -Name "Enabled" -Value 1 -Type DWord
 
 # VHD Locations
-Set-ItemProperty -Path $fslogixPath -Name "VHDLocations" -Value @("\\vpcuvadpsa1.file.core.windows.net\fslogix-vhd-desktop-c1-pool") -Type MultiString
+Set-ItemProperty -Path $fslogixPath -Name "VHDLocations" -Value @("\\flpcu1avdpzsa1.file.core.windows.net\fslogix-wvd-fei-desktop-cu1-pool") -Type MultiString
 
 # Delete local profile when VHD should apply
 Set-ItemProperty -Path $fslogixPath -Name "DeleteLocalProfileWhenVHDShouldApply" -Value 1 -Type DWord
@@ -193,7 +193,7 @@ Set-ItemProperty -Path $fslogixPath -Name "PreventLoginWithFailure" -Value 1 -Ty
 Set-ItemProperty -Path $fslogixPath -Name "PreventLoginWithTempProfile" -Value 1 -Type DWord
 
 # Redirection XML source folder
-Set-ItemProperty -Path $fslogixPath -Name "RedirXMLSourceFolder" -Value "\\vpcuvadpsa1.file.core.windows.net\vad-misc-files" -Type String
+Set-ItemProperty -Path $fslogixPath -Name "RedirXMLSourceFolder" -Value "\\flpcu1avdpzsa1.file.core.windows.net\avd-misc-files" -Type String
 
 # Flip Flop Profile Directory Name
 Set-ItemProperty -Path $fslogixPath -Name "FlipFlopProfileDirectoryName" -Value 1 -Type DWord
@@ -207,3 +207,4 @@ Write-Host "FSLogix configuration completed."
 # Remove-Item -Path $tempDir -Recurse -Force
 
 Write-Host "All installations and configurations completed."
+
