@@ -1,6 +1,5 @@
 # PowerShell Script to Download and Install Latest Versions of Specified Apps
 # Uses only built-in PowerShell cmdlets (Invoke-WebRequest, Invoke-RestMethod, Start-Process, etc.)
-# Run as Administrator for installations
 
 # Function to check if an app is installed
 function Test-AppInstalled {
